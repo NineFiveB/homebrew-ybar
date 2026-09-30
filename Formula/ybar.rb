@@ -1,6 +1,9 @@
 # THIS FILE IS THE SOURCE OF TRUTH — github.com/NineFiveB/homebrew-ybar mirrors
-# it verbatim (Formula/ybar.rb there); copy it over on every release, after
-# updating the url tag + sha256 below.
+# it verbatim (Formula/ybar.rb there). The release workflow
+# (.github/workflows/release.yml) pins the url tag + sha256 below from the
+# tag's own source tarball, proves them with a build-from-source install,
+# commits the pin back here and pushes the copy to the tap; nothing in it
+# is edited by hand any more.
 #
 # A formula, not a cask: YBar has no Developer ID, so a downloaded binary
 # arrives quarantined with an untrusted signature and Gatekeeper refuses it.
@@ -10,11 +13,11 @@
 class Ybar < Formula
   desc "Metal-rendered, sketchybar-compatible macOS status bar"
   homepage "https://github.com/NineFiveB/YBar"
-  url "https://github.com/NineFiveB/YBar/archive/refs/tags/v0.1.0.tar.gz"
-  # SOURCE tarball hash (curl -L <url above> | shasum -a 256) - NOT the
+  url "https://github.com/NineFiveB/YBar/archive/refs/tags/v0.3.0.tar.gz"
+  # SOURCE tarball hash (curl -fL <url above> | shasum -a 256) - NOT the
   # app-zip hash that `make release` prints, which is a different,
-  # machine-signed artifact. Regenerate on every new tag.
-  sha256 "88bf58485b702f9d4f1db7d618728bd04457693594696ae0bc1e79fe9db9693c"
+  # machine-signed artifact. Pinned by the release workflow on every tag.
+  sha256 "989af87d20e5eb8e7472ecda5186721a907034a84bca9be1949a6a4a277d322c"
   license "GPL-3.0-only"
   head "https://github.com/NineFiveB/YBar.git", branch: "main"
 
@@ -35,6 +38,13 @@ class Ybar < Formula
     (app/"Contents/MacOS").mkpath
     (app/"Contents/Resources").mkpath
     cp "packaging/Info.plist", app/"Contents/Info.plist"
+    # Same build stamp as the Makefile: a --HEAD install names its commit in
+    # CFBundleVersion, which `ybar --version` appends. A tag install keeps
+    # the release build number from the committed plist.
+    if build.head?
+      system "plutil", "-replace", "CFBundleVersion", "-string",
+             Utils.git_short_head, app/"Contents/Info.plist"
+    end
     cp ".scratch/release/ybar", app/"Contents/MacOS/ybar"
     cp_r ".scratch/release/YBar_YBarKit.bundle", app/"Contents/Resources"
 
@@ -51,13 +61,31 @@ class Ybar < Formula
     bin.install "scripts/ybar-theme"
   end
 
+  # There is deliberately NO `service do` block, so `brew services start ybar`
+  # stays unimplemented. It would register a second RunAtLoad agent
+  # (sh.brew.ybar, or homebrew.mxcl.ybar on older Homebrew) racing
+  # com.ybar.YBar for /tmp/ybar_<user>.socket at login; the loser exits 0,
+  # which launchd reads as a clean quit and never retries, so one of the two
+  # bars silently never appears. yabai's and skhd's formulae omit it for the
+  # same reason and point their caveats at the built-in verb. `ybar autostart
+  # enable` is the supported route, it refuses to run while a brew-managed job
+  # is loaded, and `ybar status` reports the collision if one exists.
+
   def caveats
     <<~EOS
       YBar runs as an app bundle so macOS attributes privacy prompts
       (Bluetooth, Calendar, Apple Events) and manual grants (Accessibility,
       Screen Recording) to com.ybar.YBar. Start it with:
 
-        open -g #{opt_prefix}/YBar.app --args -c ~/.config/ybar/ybarrc.lua
+        ybar start
+
+      and have it come up at every login (a launchd agent that also restarts
+      it after a crash) with:
+
+        ybar autostart enable
+
+      `brew services` is deliberately not wired up: two login agents would race
+      for the same socket. `ybar autostart enable` is the supported route.
 
       The app is ad-hoc signed and every rebuild or upgrade produces a new
       signature, which voids previously granted TCC permissions. To keep
@@ -67,7 +95,9 @@ class Ybar < Formula
         codesign --force --sign "YBar Signing" --identifier com.ybar.YBar \\
           #{opt_prefix}/YBar.app
 
-      First-run permission walkthrough and autostart LaunchAgent:
+      Start it at login with `ybar autostart enable` (writes and loads the
+      com.ybar.YBar LaunchAgent). First-run permission walkthrough and
+      `ybar status`:
       https://github.com/NineFiveB/YBar/blob/main/docs/INSTALL.md
     EOS
   end
